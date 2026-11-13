@@ -1,0 +1,821 @@
+﻿<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ASCII Lily Bouquet — Luminous Edition</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            background: #030308;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: "Courier New", Consolas, Monaco, monospace;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+
+        // Отдельный буферный canvas для мягкого цветного свечения (Bloom)
+        const glowCanvas = document.createElement("canvas");
+        const glowCtx = glowCanvas.getContext("2d");
+
+        // Расширенная палитра ASCII-символов для плавных переходов светотени
+        const ASCII_RAMP = " .·:-=+*#%@";
+
+        // Богатые многоступенчатые палитры лилий + цвет светящейся кромки лепестка (rim)
+        const PALETTES = [
+            {
+                name: "stargazer",
+                stops: [[82, 8, 36], [214, 24, 92], [255, 96, 158], [255, 224, 240]],
+                rim: [255, 195, 225]
+            },
+            {
+                name: "tiger-sunset",
+                stops: [[96, 22, 8], [232, 74, 22], [255, 156, 44], [255, 236, 158]],
+                rim: [255, 225, 140]
+            },
+            {
+                name: "pearl-blush",
+                stops: [[92, 46, 68], [212, 138, 168], [248, 212, 226], [255, 252, 255]],
+                rim: [255, 240, 248]
+            },
+            {
+                name: "royal-orchid",
+                stops: [[68, 12, 88], [176, 36, 192], [246, 108, 232], [255, 206, 250]],
+                rim: [248, 185, 255]
+            },
+            {
+                name: "coral-peach",
+                stops: [[98, 26, 24], [234, 82, 68], [255, 158, 126], [255, 232, 214]],
+                rim: [255, 216, 196]
+            },
+            {
+                name: "moonlight-white",
+                stops: [[46, 62, 84], [146, 176, 206], [224, 240, 255], [255, 255, 255]],
+                rim: [215, 242, 255]
+            },
+            {
+                name: "golden-amber",
+                stops: [[92, 48, 6], [222, 136, 16], [255, 204, 48], [255, 248, 182]],
+                rim: [255, 244, 165]
+            },
+            {
+                name: "ruby-velvet",
+                stops: [[74, 6, 24], [188, 18, 58], [252, 68, 114], [255, 178, 202]],
+                rim: [255, 165, 195]
+            },
+            {
+                name: "flamingo-pink",
+                stops: [[92, 24, 58], [216, 68, 132], [255, 136, 188], [255, 224, 240]],
+                rim: [255, 205, 230]
+            }
+        ];
+
+        let width = 0;
+        let height = 0;
+        let dpr = 1;
+        let cellW = 5;
+        let cellH = 6;
+        let cols = 0;
+        let rows = 0;
+
+        // Буферы ASCII-сетки
+        let zBuf, rBuf, gBuf, bBuf, lumBuf, charBuf;
+
+        let startTime = performance.now();
+        let flowers = [];
+        let babysBreath = [];
+        let sparkles = [];
+        let floatingPetals = [];
+
+        // Лёгкий интерактивный ветер от курсора мыши
+        let mouseNormX = 0;
+        let smoothMouseX = 0;
+
+        function lerp(a, b, t) {
+            return a + (b - a) * t;
+        }
+
+        function clamp(v, min, max) {
+            return v < min ? min : v > max ? max : v;
+        }
+
+        function easeOutCubic(t) {
+            return 1 - Math.pow(1 - clamp(t, 0, 1), 3);
+        }
+
+        function easeInOutQuad(t) {
+            t = clamp(t, 0, 1);
+            return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        }
+
+        function sampleGradient(stops, t) {
+            t = clamp(t, 0, 1);
+            const scaled = t * (stops.length - 1);
+            const idx = Math.floor(scaled);
+            const frac = scaled - idx;
+            const c0 = stops[idx];
+            const c1 = stops[Math.min(idx + 1, stops.length - 1)];
+            return [
+                Math.round(lerp(c0[0], c1[0], frac)),
+                Math.round(lerp(c0[1], c1[1], frac)),
+                Math.round(lerp(c0[2], c1[2], frac))
+            ];
+        }
+
+        // Конфигурация букета, веточек гипсофилы и частиц
+        function initBouquet() {
+            const specs = [
+                { tx: 0.03, ty: 0.20, scale: 1.04, pal: 0, tiltX: 0.06, tiltY: 0.14, rot: 0.20, delay: 1.50, budOnly: false },
+                { tx: -0.11, ty: 0.25, scale: 0.98, pal: 1, tiltX: -0.18, tiltY: 0.12, rot: 0.65, delay: 1.65, budOnly: false },
+                { tx: 0.15, ty: 0.28, scale: 0.96, pal: 2, tiltX: 0.24, tiltY: 0.10, rot: 0.10, delay: 1.75, budOnly: false },
+                { tx: -0.18, ty: 0.38, scale: 1.06, pal: 3, tiltX: -0.26, tiltY: 0.05, rot: 0.45, delay: 1.40, budOnly: false },
+                { tx: 0.01, ty: 0.36, scale: 1.06, pal: 4, tiltX: 0.02, tiltY: 0.08, rot: 0.90, delay: 1.30, budOnly: false },
+                { tx: 0.18, ty: 0.40, scale: 1.08, pal: 5, tiltX: 0.26, tiltY: 0.04, rot: 0.30, delay: 1.45, budOnly: false },
+                { tx: -0.13, ty: 0.50, scale: 0.97, pal: 6, tiltX: -0.22, tiltY: -0.04, rot: 0.75, delay: 1.60, budOnly: false },
+                { tx: 0.13, ty: 0.51, scale: 0.96, pal: 7, tiltX: 0.20, tiltY: -0.05, rot: 0.15, delay: 1.70, budOnly: false },
+                { tx: -0.02, ty: 0.49, scale: 0.94, pal: 8, tiltX: -0.04, tiltY: -0.02, rot: 0.52, delay: 1.55, budOnly: false },
+                // Боковые бутоны для объёма
+                { tx: -0.22, ty: 0.30, scale: 0.58, pal: 3, tiltX: -0.32, tiltY: 0.12, rot: 0.40, delay: 1.85, budOnly: true },
+                { tx: 0.22, ty: 0.33, scale: 0.58, pal: 0, tiltX: 0.32, tiltY: 0.10, rot: 0.80, delay: 1.90, budOnly: true }
+            ];
+
+            flowers = specs.map((s, idx) => {
+                const leaves = [];
+                const leafCount = s.budOnly ? 2 : 3;
+                for (let i = 0; i < leafCount; i++) {
+                    const tPos = 0.24 + i * 0.19 + (idx % 2) * 0.04;
+                    const side = (i + idx) % 2 === 0 ? 1 : -1;
+                    leaves.push({
+                        t: tPos,
+                        side,
+                        length: (0.145 + (1 - tPos) * 0.11) * (s.budOnly ? 0.85 : 1),
+                        width: 0.023,
+                        droop: 0.25 + i * 0.12
+                    });
+                }
+                return {
+                    ...s,
+                    id: idx,
+                    phase: idx * 0.85,
+                    leaves
+                };
+            });
+
+            // Воздушные веточки гипсофилы (мелкие белые/лавандовые/розовые соцветия)
+            babysBreath = [
+                { tx: -0.07, ty: 0.19, phase: 0.4, tint: [255, 245, 255] },
+                { tx: 0.09, ty: 0.22, phase: 1.7, tint: [235, 245, 255] },
+                { tx: -0.20, ty: 0.46, phase: 2.9, tint: [255, 225, 242] },
+                { tx: 0.20, ty: 0.47, phase: 4.1, tint: [242, 232, 255] }
+            ];
+
+            // Многоцветная золотая, розовая и звёздная пыльца
+            const sparkleColors = [
+                [255, 226, 130], // тёплое золото
+                [255, 175, 215], // нежно-розовый
+                [185, 225, 255], // лунный голубой
+                [232, 195, 255], // лавандовый
+                [255, 250, 235]  // жемчужный
+            ];
+
+            sparkles = Array.from({ length: 80 }, (_, i) => ({
+                x: Math.random(),
+                y: Math.random(),
+                speedY: 0.008 + Math.random() * 0.018,
+                drift: (Math.random() - 0.5) * 0.014,
+                phase: Math.random() * Math.PI * 2,
+                charIdx: i % 5 === 0 ? 6 : i % 2 === 0 ? 5 : 2, // '*', '+', '·'
+                color: sparkleColors[i % sparkleColors.length]
+            }));
+
+            // Парящие в воздухе лепестки
+            floatingPetals = Array.from({ length: 9 }, (_, i) => ({
+                x: 0.22 + Math.random() * 0.56,
+                y: 0.15 + Math.random() * 0.65,
+                speedY: 0.014 + Math.random() * 0.014,
+                swayAmp: 0.025 + Math.random() * 0.025,
+                swayFreq: 1.2 + Math.random() * 1.1,
+                rotSpeed: (Math.random() - 0.5) * 2.2,
+                phase: Math.random() * Math.PI * 2,
+                palIdx: i % PALETTES.length
+            }));
+        }
+
+        function resize() {
+            dpr = Math.min(window.devicePixelRatio || 1, 2);
+            width = window.innerWidth;
+            height = window.innerHeight;
+
+            canvas.width = Math.floor(width * dpr);
+            canvas.height = Math.floor(height * dpr);
+            canvas.style.width = width + "px";
+            canvas.style.height = height + "px";
+
+            const baseDim = Math.min(width, height);
+            cellW = Math.max(5, Math.round(baseDim / 155));
+            cellH = Math.max(6, Math.round(cellW * 1.18));
+
+            cols = Math.ceil(width / cellW);
+            rows = Math.ceil(height / cellH);
+
+            glowCanvas.width = cols;
+            glowCanvas.height = rows;
+
+            const total = cols * rows;
+            zBuf = new Float32Array(total);
+            rBuf = new Uint8Array(total);
+            gBuf = new Uint8Array(total);
+            bBuf = new Uint8Array(total);
+            lumBuf = new Float32Array(total);
+            charBuf = new Uint8Array(total);
+        }
+
+        function clearGrid() {
+            zBuf.fill(-1e9);
+            lumBuf.fill(0);
+        }
+
+        function plotCell(px, py, z, r, g, b, lum, forcedCharIdx = -1) {
+            const c = Math.floor(px / cellW);
+            const rIdx = Math.floor(py / cellH);
+            if (c < 0 || c >= cols || rIdx < 0 || rIdx >= rows) return;
+
+            const idx = rIdx * cols + c;
+            if (z >= zBuf[idx]) {
+                zBuf[idx] = z;
+                rBuf[idx] = r;
+                gBuf[idx] = g;
+                bBuf[idx] = b;
+                lumBuf[idx] = lum;
+                if (forcedCharIdx >= 0) {
+                    charBuf[idx] = forcedCharIdx;
+                } else {
+                    const ci = Math.min(
+                        ASCII_RAMP.length - 1,
+                        Math.max(1, Math.floor(lum * (ASCII_RAMP.length - 1)))
+                    );
+                    charBuf[idx] = ci;
+                }
+            }
+        }
+
+        function quadBezier(p0, p1, p2, t) {
+            const mt = 1 - t;
+            return {
+                x: mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x,
+                y: mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y
+            };
+        }
+
+        // Отрисовка стебля с изумрудно-золотистым бликом
+        function drawStem(p0, p1, p2, growT, zBase) {
+            const steps = 115;
+            const maxStep = Math.floor(steps * growT);
+            for (let i = 0; i <= maxStep; i++) {
+                const t = i / steps;
+                const pt = quadBezier(p0, p1, p2, t);
+                const radius = lerp(cellW * 1.18, cellW * 0.55, t);
+
+                for (let dx = -radius; dx <= radius; dx += cellW * 0.5) {
+                    const norm = dx / (radius || 1);
+                    const shade = clamp(0.45 + 0.55 * (1 - Math.abs(norm)) + (norm < 0 ? 0.18 : -0.12), 0.22, 0.98);
+                    const r = Math.round(lerp(18, 148, shade));
+                    const g = Math.round(lerp(86, 245, shade));
+                    const b = Math.round(lerp(42, 132, shade));
+                    plotCell(pt.x + dx, pt.y, zBase + t * 2, r, g, b, shade);
+                }
+            }
+        }
+
+        // Отрисовка заострённого листа лилии с прожилками
+        function drawLeaf(origin, tangentAngle, leaf, growProgress, scaleUnit, zBase) {
+            if (growProgress <= 0) return;
+            const len = leaf.length * scaleUnit * growProgress;
+            const maxW = leaf.width * scaleUnit * Math.sqrt(growProgress);
+
+            const dirAngle = tangentAngle + leaf.side * (0.58 + 0.15 * growProgress);
+            const cosA = Math.cos(dirAngle);
+            const sinA = Math.sin(dirAngle);
+            const perpX = -sinA;
+            const perpY = cosA;
+
+            const uSteps = 36;
+            const vSteps = 13;
+
+            for (let iu = 0; iu <= uSteps; iu++) {
+                const u = iu / uSteps;
+                const profile = Math.sin(Math.pow(u, 0.68) * Math.PI);
+                const halfW = maxW * profile;
+                const bend = leaf.side * u * u * len * leaf.droop;
+
+                const spineX = origin.x + cosA * (u * len) + perpX * bend;
+                const spineY = origin.y + sinA * (u * len) + perpY * bend + u * u * len * 0.18;
+
+                for (let iv = -vSteps; iv <= vSteps; iv++) {
+                    const v = iv / vSteps;
+                    const px = spineX + perpX * (v * halfW);
+                    const py = spineY + perpY * (v * halfW);
+
+                    const isVein = Math.abs(v) < 0.15;
+                    const lum = isVein
+                        ? 0.94 - u * 0.22
+                        : 0.40 + 0.45 * (1 - Math.abs(v)) * (1 - u * 0.32);
+
+                    // Лёгкий бирюзовый оттенок в тени и тёплый салатовый на свету
+                    const r = Math.round(lerp(16, 168, lum));
+                    const g = Math.round(lerp(78, 250, lum));
+                    const b = Math.round(lerp(48, 142, lum));
+                    plotCell(px, py, zBase + u * 3, r, g, b, lum);
+                }
+            }
+        }
+
+        // Отрисовка веточки гипсофилы с мерцающими мелкими цветочками
+        function drawBabysBreath(centerX, rootY, branch, stemGrow, elapsed, wind, scaleUnit) {
+            const p0 = { x: centerX + branch.tx * scaleUnit * 0.12, y: rootY };
+            const p1 = {
+                x: centerX + branch.tx * scaleUnit * 0.45 + wind * scaleUnit * 0.3,
+                y: lerp(rootY, height * branch.ty, 0.5)
+            };
+            const p2 = {
+                x: centerX + branch.tx * scaleUnit + wind * scaleUnit * 1.1,
+                y: height * branch.ty
+            };
+
+            // Тонкий изящный стебелёк
+            const steps = 65;
+            const maxStep = Math.floor(steps * stemGrow);
+            for (let i = 0; i <= maxStep; i++) {
+                const t = i / steps;
+                const pt = quadBezier(p0, p1, p2, t);
+                plotCell(pt.x, pt.y, -2 + t, 48, 138, 86, 0.45, 2);
+            }
+
+            if (stemGrow < 0.65) return;
+            const bloomT = easeOutCubic((stemGrow - 0.65) / 0.35);
+
+            // Мелкие соцветия на концах веточек
+            const subTips = [
+                { t: 0.72, ox: -0.032, oy: -0.025 },
+                { t: 0.80, ox: 0.034, oy: -0.020 },
+                { t: 0.88, ox: -0.024, oy: -0.035 },
+                { t: 0.94, ox: 0.026, oy: -0.032 },
+                { t: 1.00, ox: 0.000, oy: -0.042 }
+            ];
+
+            for (let i = 0; i < subTips.length; i++) {
+                const st = subTips[i];
+                if (stemGrow < st.t) continue;
+                const base = quadBezier(p0, p1, p2, st.t);
+                const fx = base.x + st.ox * scaleUnit * bloomT;
+                const fy = base.y + st.oy * scaleUnit * bloomT;
+
+                // Тонкая цветоножка
+                for (let k = 1; k <= 5; k++) {
+                    const kt = k / 5;
+                    plotCell(lerp(base.x, fx, kt), lerp(base.y, fy, kt), 4, 64, 162, 104, 0.4, 1);
+                }
+
+                // Звёздочка цветка гипсофилы
+                const pulse = 0.78 + 0.22 * Math.sin(elapsed * 3.5 + branch.phase + i);
+                const [tr, tg, tb] = branch.tint;
+                plotCell(fx, fy, 12, tr, tg, tb, 0.96 * pulse, 7); // '*'
+                plotCell(fx - cellW * 0.7, fy, 11, tr, tg, tb, 0.7 * pulse, 2);
+                plotCell(fx + cellW * 0.7, fy, 11, tr, tg, tb, 0.7 * pulse, 2);
+                plotCell(fx, fy - cellH * 0.6, 11, tr, tg, tb, 0.7 * pulse, 2);
+                plotCell(fx, fy + cellH * 0.6, 11, tr, tg, tb, 0.7 * pulse, 2);
+            }
+        }
+
+        // Отрисовка лепестка лилии с бархатным градиентом и светящейся кромкой
+        function drawPetal(center, angle, petalLen, petalWidth, bloom, palette, tiltX, tiltY, zBase, isInner) {
+            const cosA = Math.cos(angle);
+            const sinA = Math.sin(angle);
+            const perpX = -sinA;
+            const perpY = cosA;
+
+            const uSteps = 44;
+            const vSteps = 21;
+
+            for (let iu = 0; iu <= uSteps; iu++) {
+                const u = iu / uSteps;
+                const widthProfile = Math.sin(Math.pow(u, 0.72) * Math.PI) * (1 - 0.14 * Math.pow(u, 3));
+                const halfW = petalWidth * widthProfile * (0.28 + 0.72 * bloom);
+
+                const curl = bloom > 0.4 ? Math.sin(u * Math.PI) * (bloom - 0.4) * 0.18 : 0;
+                const dist = u * petalLen * (0.45 + 0.55 * bloom) * (1 - curl * 0.35);
+
+                const rawX = cosA * dist;
+                const rawY = sinA * dist;
+                const projX = center.x + rawX * (1 - Math.abs(tiltX) * 0.22) + tiltX * petalLen * 0.22 * u;
+                const projY = center.y + rawY * (1 - Math.abs(tiltY) * 0.22) + tiltY * petalLen * 0.22 * u - (1 - bloom) * petalLen * 0.28 * u;
+
+                const z = zBase + (isInner ? 6 : 2) + Math.sin(u * Math.PI) * 5 * bloom - u * 2;
+
+                for (let iv = -vSteps; iv <= vSteps; iv++) {
+                    const v = iv / vSteps;
+                    const absV = Math.abs(v);
+                    const px = projX + perpX * (v * halfW);
+                    const py = projY + perpY * (v * halfW);
+
+                    const midrib = Math.exp(-Math.pow(v * 5.5, 2));
+                    const veins = 0.065 * Math.cos(v * 16);
+
+                    // Крап на лепестках
+                    const hash = Math.sin(iu * 12.9898 + iv * 78.233) * 43758.5453;
+                    const rand = hash - Math.floor(hash);
+                    const isSpeckle = bloom > 0.35 && u > 0.16 && u < 0.48 && absV < 0.56 && rand > 0.905;
+
+                    const colorT = clamp(u * 0.86 + midrib * 0.16 + veins - (1 - bloom) * 0.2, 0, 1);
+                    let [r, g, b] = sampleGradient(palette.stops, colorT);
+
+                    // Светящаяся кайма по краю лепестка (Rim Light)
+                    const rimFactor = bloom > 0.3 ? smoothstepRim(absV, 0.76, 1.0) * Math.sin(u * Math.PI) : 0;
+                    if (rimFactor > 0) {
+                        r = Math.round(lerp(r, palette.rim[0], rimFactor * 0.75));
+                        g = Math.round(lerp(g, palette.rim[1], rimFactor * 0.75));
+                        b = Math.round(lerp(b, palette.rim[2], rimFactor * 0.75));
+                    }
+
+                    // Зеленоватое основание у нераскрывшегося бутона
+                    if (bloom < 0.55 && u < 0.35) {
+                        const greenMix = (1 - bloom / 0.55) * (1 - u / 0.35) * 0.65;
+                        r = Math.round(lerp(r, 75, greenMix));
+                        g = Math.round(lerp(g, 185, greenMix));
+                        b = Math.round(lerp(b, 78, greenMix));
+                    }
+
+                    if (isSpeckle) {
+                        r = Math.round(r * 0.38);
+                        g = Math.round(g * 0.22);
+                        b = Math.round(b * 0.30);
+                    }
+
+                    const lum = clamp(
+                        0.36 + u * 0.44 + midrib * 0.22 + rimFactor * 0.32 + (1 - absV) * 0.14 - (isSpeckle ? 0.26 : 0),
+                        0.22,
+                        1.0
+                    );
+
+                    plotCell(px, py, z, r, g, b, lum);
+                }
+            }
+        }
+
+        function smoothstepRim(x, e0, e1) {
+            const t = clamp((x - e0) / (e1 - e0), 0, 1);
+            return t * t * (3 - 2 * t);
+        }
+
+        // Отрисовка 6 тычинок с золотисто-янтарными пыльниками
+        function drawStamens(center, baseRot, petalLen, bloom, tiltX, tiltY, zBase) {
+            if (bloom < 0.25) return;
+            const stamenGrow = easeOutCubic((bloom - 0.25) / 0.75);
+            const count = 6;
+
+            for (let i = 0; i < count; i++) {
+                const ang = baseRot + (i * Math.PI * 2) / count + 0.26;
+                const sLen = petalLen * 0.54 * stamenGrow;
+                const steps = 16;
+
+                for (let s = 0; s <= steps; s++) {
+                    const t = s / steps;
+                    const arch = Math.sin(t * Math.PI) * petalLen * 0.06;
+                    const px = center.x + Math.cos(ang) * (t * sLen) - Math.sin(ang) * arch + tiltX * sLen * 0.25 * t;
+                    const py = center.y + Math.sin(ang) * (t * sLen) + Math.cos(ang) * arch + tiltY * sLen * 0.25 * t;
+
+                    if (s < steps - 1) {
+                        plotCell(px, py, zBase + 10, 215, 245, 175, 0.58, 3);
+                    } else {
+                        for (let ox = -1; ox <= 1; ox++) {
+                            plotCell(px + ox * cellW * 0.45, py, zBase + 11, 235, 118, 32, 0.98, 9);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Отрисовка цветка лилии
+        function drawLily(center, flower, bloom, windAngle, scaleUnit) {
+            const zBase = 20 + flower.id * 4;
+            const baseRot = flower.rot + windAngle * 0.6;
+            const petalLen = 0.148 * scaleUnit * flower.scale;
+            const petalWidth = 0.045 * scaleUnit * flower.scale;
+            const palette = PALETTES[flower.pal];
+
+            if (flower.budOnly) {
+                for (let i = 0; i < 3; i++) {
+                    const ang = baseRot + (i * Math.PI * 2) / 3;
+                    drawPetal(center, ang, petalLen * 0.85, petalWidth * 0.72, 0.14, palette, flower.tiltX, flower.tiltY, zBase, false);
+                }
+                return;
+            }
+
+            for (let i = 0; i < 3; i++) {
+                const ang = baseRot + (i * Math.PI * 2) / 3;
+                drawPetal(center, ang, petalLen, petalWidth, bloom, palette, flower.tiltX, flower.tiltY, zBase, false);
+            }
+
+            for (let i = 0; i < 3; i++) {
+                const ang = baseRot + Math.PI / 3 + (i * Math.PI * 2) / 3;
+                drawPetal(center, ang, petalLen * 0.95, petalWidth * 1.05, bloom, palette, flower.tiltX, flower.tiltY, zBase + 3, true);
+            }
+
+            drawStamens(center, baseRot, petalLen, bloom, flower.tiltX, flower.tiltY, zBase);
+        }
+
+        // Шёлковая лента с бантом, перевязывающая букет
+        function drawBouquetRibbon(centerX, rootY, scaleUnit, growT, wind) {
+            if (growT < 0.22) return;
+            const ribGrow = easeOutCubic((growT - 0.22) / 0.55);
+            const bowX = centerX + wind * scaleUnit * 0.06;
+            const bowY = rootY - scaleUnit * 0.135;
+
+            // Поперечный перехват стеблей
+            const bandHalfW = scaleUnit * 0.042 * ribGrow;
+            const bandHalfH = scaleUnit * 0.014;
+            for (let x = -bandHalfW; x <= bandHalfW; x += cellW * 0.45) {
+                for (let y = -bandHalfH; y <= bandHalfH; y += cellH * 0.45) {
+                    const shade = 0.55 + 0.45 * (1 - Math.abs(y / bandHalfH));
+                    const r = Math.round(lerp(115, 255, shade));
+                    const g = Math.round(lerp(24, 108, shade));
+                    const b = Math.round(lerp(68, 168, shade));
+                    plotCell(bowX + x, bowY + y, 45, r, g, b, shade, 8);
+                }
+            }
+
+            // Две петли банта (левая и правая)
+            const loopW = scaleUnit * 0.088 * ribGrow;
+            const loopH = scaleUnit * 0.044 * ribGrow;
+            for (let side of [-1, 1]) {
+                const steps = 48;
+                for (let i = 0; i <= steps; i++) {
+                    const a = (i / steps) * Math.PI * 2;
+                    const lx = bowX + side * (Math.cos(a) * 0.5 + 0.5) * loopW;
+                    const ly = bowY + Math.sin(a) * loopH * (0.45 + 0.55 * (Math.cos(a) * 0.5 + 0.5));
+                    const shade = 0.5 + 0.5 * Math.sin(a * 0.5);
+                    const r = Math.round(lerp(135, 255, shade));
+                    const g = Math.round(lerp(32, 132, shade));
+                    const b = Math.round(lerp(82, 192, shade));
+
+                    for (let w = -1; w <= 1; w++) {
+                        plotCell(lx, ly + w * cellH * 0.45, 46, r, g, b, 0.75 + shade * 0.25, 7);
+                    }
+                }
+            }
+
+            // Свободно ниспадающие концы ленты
+            for (let side of [-1, 1]) {
+                const tailSteps = 34;
+                for (let i = 0; i <= tailSteps; i++) {
+                    const t = i / tailSteps;
+                    const tx = bowX + side * (0.015 + t * 0.068) * scaleUnit * ribGrow + Math.sin(t * 4 + wind * 8) * 6 * t;
+                    const ty = bowY + t * 0.125 * scaleUnit * ribGrow;
+                    const shade = 0.88 - t * 0.35;
+                    const r = Math.round(lerp(120, 255, shade));
+                    const g = Math.round(lerp(28, 118, shade));
+                    const b = Math.round(lerp(74, 178, shade));
+                    plotCell(tx - cellW * 0.35, ty, 44, r, g, b, shade, 6);
+                    plotCell(tx + cellW * 0.35, ty, 44, r, g, b, shade, 6);
+                }
+            }
+
+            // Центральный узелок
+            for (let ox = -1; ox <= 1; ox++) {
+                for (let oy = -1; oy <= 1; oy++) {
+                    plotCell(bowX + ox * cellW * 0.5, bowY + oy * cellH * 0.5, 48, 255, 175, 215, 0.98, 9);
+                }
+            }
+        }
+
+        // Парящие в воздухе лепестки
+        function updateAndDrawFloatingPetals(elapsed, scaleUnit) {
+            const bloomGlobal = clamp((elapsed - 1.8) / 1.5, 0, 1);
+            if (bloomGlobal <= 0) return;
+
+            for (const fp of floatingPetals) {
+                fp.y += fp.speedY * 0.016;
+                if (fp.y > 0.94) {
+                    fp.y = 0.08 + Math.random() * 0.15;
+                    fp.x = 0.20 + Math.random() * 0.60;
+                }
+
+                const px = (fp.x + Math.sin(elapsed * fp.swayFreq + fp.phase) * fp.swayAmp + smoothMouseX * 0.04) * width;
+                const py = fp.y * height;
+                const rot = elapsed * fp.rotSpeed + fp.phase;
+                const pal = PALETTES[fp.palIdx];
+                const size = scaleUnit * 0.018 * bloomGlobal;
+
+                const cosR = Math.cos(rot);
+                const sinR = Math.sin(rot);
+
+                for (let u = -1; u <= 1; u += 0.35) {
+                    for (let v = -0.6; v <= 0.6; v += 0.4) {
+                        if (u * u + (v * 1.5) * (v * 1.5) > 1.05) continue;
+                        const lx = u * size;
+                        const ly = v * size * 0.65;
+                        const wx = px + lx * cosR - ly * sinR;
+                        const wy = py + lx * sinR + ly * cosR;
+                        const [r, g, b] = sampleGradient(pal.stops, (u + 1) * 0.45 + 0.1);
+                        plotCell(wx, wy, 55, r, g, b, 0.85, 6);
+                    }
+                }
+            }
+        }
+
+        function render(now) {
+            const elapsed = (now - startTime) / 1000;
+            smoothMouseX = lerp(smoothMouseX, mouseNormX, 0.05);
+            clearGrid();
+
+            const scaleUnit = Math.min(width, height * 0.96);
+            const centerX = width * 0.5;
+            const rootY = height * 0.92;
+
+            // 1. Мерцающая разноцветная пыльца и звёздочки на фоне
+            for (const sp of sparkles) {
+                sp.y -= sp.speedY * 0.016;
+                sp.x += (sp.drift + smoothMouseX * 0.015) * 0.016;
+                if (sp.y < 0.04) {
+                    sp.y = 0.96;
+                    sp.x = 0.12 + Math.random() * 0.76;
+                }
+                const twinkle = 0.5 + 0.5 * Math.sin(elapsed * 3.4 + sp.phase);
+                if (twinkle > 0.22) {
+                    const lum = twinkle * 0.92;
+                    const [sr, sg, sb] = sp.color;
+                    plotCell(
+                        sp.x * width,
+                        sp.y * height,
+                        -5,
+                        Math.round(sr * (0.65 + 0.35 * twinkle)),
+                        Math.round(sg * (0.65 + 0.35 * twinkle)),
+                        Math.round(sb * (0.65 + 0.35 * twinkle)),
+                        lum,
+                        sp.charIdx
+                    );
+                }
+            }
+
+            const stemGrow = easeOutCubic(elapsed / 1.65);
+
+            // 2. Воздушные веточки гипсофилы
+            for (const br of babysBreath) {
+                const wind = Math.sin(elapsed * 1.45 + br.phase) * 0.015 + smoothMouseX * 0.025;
+                drawBabysBreath(centerX, rootY, br, stemGrow, elapsed, wind, scaleUnit);
+            }
+
+            // 3. Основные стебли, листья и лилии
+            let avgWind = 0;
+            for (const f of flowers) {
+                const wind =
+                    Math.sin(elapsed * 1.55 + f.phase) * 0.016 +
+                    Math.sin(elapsed * 0.75 + f.id) * 0.009 +
+                    smoothMouseX * 0.028;
+                avgWind += wind;
+
+                const p0 = { x: centerX + f.tx * scaleUnit * 0.14, y: rootY };
+                const p1 = {
+                    x: centerX + f.tx * scaleUnit * 0.42 + wind * scaleUnit * 0.35,
+                    y: lerp(rootY, height * f.ty, 0.52)
+                };
+                const p2 = {
+                    x: centerX + f.tx * scaleUnit + wind * scaleUnit,
+                    y: height * f.ty
+                };
+
+                drawStem(p0, p1, p2, stemGrow, f.id * 2);
+
+                for (const leaf of f.leaves) {
+                    if (stemGrow > leaf.t) {
+                        const leafGrow = easeOutCubic((stemGrow - leaf.t) / (1 - leaf.t + 0.15));
+                        const attachPt = quadBezier(p0, p1, p2, leaf.t);
+                        const nextPt = quadBezier(p0, p1, p2, Math.min(1, leaf.t + 0.02));
+                        const tangent = Math.atan2(nextPt.y - attachPt.y, nextPt.x - attachPt.x);
+                        drawLeaf(attachPt, tangent, leaf, leafGrow, scaleUnit, f.id * 2 + 1);
+                    }
+                }
+
+                if (stemGrow > 0.72) {
+                    const tipPt = quadBezier(p0, p1, p2, stemGrow);
+                    const bloomRaw = (elapsed - f.delay) / 1.65;
+                    const bloom = easeInOutQuad(bloomRaw);
+                    drawLily(tipPt, f, bloom, wind * 6, scaleUnit);
+                }
+            }
+
+            // 4. Атласная лента с бантом в основании букета
+            drawBouquetRibbon(centerX, rootY, scaleUnit, stemGrow, avgWind / flowers.length);
+
+            // 5. Парящие лепестки
+            updateAndDrawFloatingPetals(elapsed, scaleUnit);
+
+            // 6. Глубокий атмосферный фон и цветное свечение (Bloom Pass)
+            const bgGrad = ctx.createRadialGradient(
+                centerX,
+                height * 0.44,
+                scaleUnit * 0.04,
+                centerX,
+                height * 0.48,
+                scaleUnit * 0.78
+            );
+            bgGrad.addColorStop(0, "#14091c");
+            bgGrad.addColorStop(0.55, "#080612");
+            bgGrad.addColorStop(1, "#020205");
+            ctx.fillStyle = bgGrad;
+            ctx.fillRect(0, 0, width, height);
+
+            // Заполняем низкоразрешающий слой свечения яркими точками букета
+            glowCtx.clearRect(0, 0, cols, rows);
+            for (let r = 0; r < rows; r++) {
+                const rowOffset = r * cols;
+                for (let c = 0; c < cols; c++) {
+                    const idx = rowOffset + c;
+                    if (lumBuf[idx] > 0.48) {
+                        glowCtx.fillStyle = `rgb(${rBuf[idx]},${gBuf[idx]},${bBuf[idx]})`;
+                        glowCtx.fillRect(c, r, 1, 1);
+                    }
+                }
+            }
+
+            ctx.save();
+            ctx.globalCompositeOperation = "screen";
+            ctx.globalAlpha = 0.52;
+            if ("filter" in ctx) {
+                ctx.filter = "blur(14px)";
+            }
+            ctx.drawImage(glowCanvas, 0, 0, cols, rows, 0, 0, width, height);
+            ctx.restore();
+
+            // 7. Финальная отрисовка чёткой цветной ASCII-сетки поверх свечения
+            ctx.font = `bold ${cellH}px "Courier New", Consolas, monospace`;
+            ctx.textBaseline = "top";
+
+            const batches = new Map();
+            for (let r = 0; r < rows; r++) {
+                const y = r * cellH;
+                const rowOffset = r * cols;
+                for (let c = 0; c < cols; c++) {
+                    const idx = rowOffset + c;
+                    if (lumBuf[idx] <= 0.01) continue;
+
+                    const colorKey = `rgb(${rBuf[idx]},${gBuf[idx]},${bBuf[idx]})`;
+                    let list = batches.get(colorKey);
+                    if (!list) {
+                        list = [];
+                        batches.set(colorKey, list);
+                    }
+                    list.push(ASCII_RAMP[charBuf[idx]], c * cellW, y);
+                }
+            }
+
+            for (const [color, items] of batches.entries()) {
+                ctx.fillStyle = color;
+                for (let i = 0; i < items.length; i += 3) {
+                    ctx.fillText(items[i], items[i + 1], items[i + 2]);
+                }
+            }
+
+            requestAnimationFrame(render);
+        }
+
+        // Перезапуск роста и раскрытия букета по клику
+        window.addEventListener("click", () => {
+            startTime = performance.now();
+        });
+
+        // Лёгкий интерактивный ветер при движении курсора
+        window.addEventListener("pointermove", (e) => {
+            mouseNormX = (e.clientX / (width || 1) - 0.5) * 2;
+        });
+
+        window.addEventListener("resize", resize);
+
+        resize();
+        initBouquet();
+        requestAnimationFrame(render);
+    </script>
+</body>
+</html>
